@@ -1,22 +1,248 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <link rel="stylesheet"
-    href="https://unpkg.com/leaflet/dist/leaflet.css"/>
-  <style>#map{height:100vh}</style>
+<meta charset="utf-8" />
+<title>Fleet Routing Map</title>
+
+<link rel="stylesheet"
+  href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<style>
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+}
+
+#toolbar {
+  height: 50px;
+  padding: 8px 12px;
+  background: #ffffff;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#map {
+  height: calc(100vh - 120px);
+}
+
+select {
+  padding: 6px 10px;
+  font-size: 14px;
+}
+
+.plate-tag {
+  background: #ffffff;
+  padding: 4px 12px;
+  border-radius: 16px;
+  border: 2px solid #1e90ff;
+  color: #1e90ff;
+  font-size: 13px;
+  font-weight: bold;
+  white-space: nowrap;
+  width: max-content;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+
+.route-tag {
+  background: #1e90ff;
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: bold;
+  white-space: nowrap;
+  width: max-content;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+}
+
+.no-dest {
+  background: #ff9800;
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.address-bar {
+  height: 70px;
+  padding: 10px 16px;
+  background: #f8f9fa;
+  border-top: 1px solid #ddd;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+}
+</style>
 </head>
+
 <body>
-  <div id="map"></div>
 
-  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-  <script>
-    const map = L.map('map').setView([13.7563, 100.5018], 15);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png')
-      .addTo(map);
+<div id="toolbar">
+  🚗 เลือกรถ:
+  <select id="carSelect">
+    <option value="">-- เลือกรถ --</option>
+  </select>
+</div>
 
-    L.marker([13.7563, 100.5018])
-      .addTo(map)
-      .bindPopup("Home");
-  </script>
+<div id="map"></div>
+
+<div class="address-bar">
+  📍 ข้อมูลจาก Google Sheet : DeviceLog_Lastest
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+/* ================= CONFIG ================= */
+const SHEET_ID   = "1wzRloszOU63qxDbDLXkQ06ivMHAu2a0us76KubJYbRg";
+const SHEET_NAME = "DeviceLog_Lastest";
+const SHEET_URL  =
+  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?sheet=${SHEET_NAME}&tq=`;
+
+/* ================= MAP ================= */
+const map = L.map('map').setView([13.75, 100.53], 12);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19
+}).addTo(map);
+
+let activeLayers = [];
+let carData = {};
+
+/* ================= FETCH SHEET ================= */
+fetch(SHEET_URL)
+  .then(res => res.text())
+  .then(text => {
+    const json = JSON.parse(text.substring(47).slice(0, -2));
+    const rows = json.table.rows;
+
+    rows.forEach(r => {
+      if (!r.c) return;
+
+      const plate   = r.c[1]?.v;   // B
+      const carLat  = r.c[4]?.v;   // E
+      const carLng  = r.c[5]?.v;   // F
+      const distKm  = r.c[43]?.v;  // AR
+      const timeMin = r.c[44]?.v;  // AS
+      const destLat = r.c[45]?.v;  // AT
+      const destLng = r.c[46]?.v;  // AU
+
+      if (!plate) return;
+
+      carData[plate] = {
+        plate,
+        carPos: (carLat != null && carLng != null)
+          ? [carLat, carLng]
+          : null,
+        destPos: (destLat != null && destLng != null)
+          ? [destLat, destLng]
+          : null,
+        distKm,
+        timeMin
+      };
+    });
+
+    initDropdown();
+  });
+
+/* ================= DROPDOWN ================= */
+function initDropdown() {
+  const select = document.getElementById("carSelect");
+
+  Object.keys(carData).forEach(plate => {
+    const opt = document.createElement("option");
+    opt.value = plate;
+    opt.textContent = plate;
+    select.appendChild(opt);
+  });
+
+  select.addEventListener("change", e => {
+    renderCar(e.target.value);
+  });
+}
+
+/* ================= MAP RENDER ================= */
+function clearMap() {
+  activeLayers.forEach(l => map.removeLayer(l));
+  activeLayers = [];
+}
+
+function renderCar(plate) {
+  clearMap();
+  if (!plate) return;
+
+  const d = carData[plate];
+  if (!d || !d.carPos) return;
+
+  /* ===== zoom ===== */
+  if (d.destPos) {
+    map.fitBounds([d.carPos, d.destPos], { padding: [40, 40] });
+  } else {
+    map.setView(d.carPos, 15);
+  }
+
+  /* ===== รถ ===== */
+  activeLayers.push(
+    L.marker(d.carPos).addTo(map)
+  );
+
+  /* ===== ป้ายทะเบียน ===== */
+  activeLayers.push(
+    L.marker(d.carPos, {
+      icon: L.divIcon({
+        className: '',
+        html: `<div class="plate-tag">${d.plate}</div>`,
+        iconAnchor: [16, 46]
+      })
+    }).addTo(map)
+  );
+
+  /* ===== ไม่มีปลายทาง ===== */
+  if (!d.destPos) {
+    activeLayers.push(
+      L.marker(d.carPos, {
+        icon: L.divIcon({
+          className: '',
+          html: `<div class="no-dest">ยังไม่กำหนดปลายทาง</div>`,
+          iconAnchor: [16, 80]
+        })
+      }).addTo(map)
+    );
+    return;
+  }
+
+  /* ===== ปลายทาง ===== */
+  activeLayers.push(
+    L.marker(d.destPos).addTo(map)
+  );
+
+  /* ===== เส้นทาง ===== */
+  const line = L.polyline([d.carPos, d.destPos], {
+    color: '#1e90ff',
+    weight: 4
+  }).addTo(map);
+  activeLayers.push(line);
+
+  /* ===== tag ระยะ / เวลา (มีค่าเท่านั้น) ===== */
+  if (d.distKm != null && d.timeMin != null) {
+    activeLayers.push(
+      L.marker(line.getCenter(), {
+        icon: L.divIcon({
+          className: '',
+          html:
+            `<div class="route-tag">
+              ⏱ ${d.timeMin} นาที • 📏 ${d.distKm} กม.
+            </div>`
+        })
+      }).addTo(map)
+    );
+  }
+}
+</script>
+
 </body>
 </html>
