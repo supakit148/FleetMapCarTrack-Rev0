@@ -41,7 +41,6 @@ select {
   font-size: 13px;
   font-weight: bold;
   white-space: nowrap;
-  width: max-content;
   box-shadow: 0 2px 6px rgba(0,0,0,0.3);
 }
 
@@ -53,7 +52,6 @@ select {
   font-size: 13px;
   font-weight: bold;
   white-space: nowrap;
-  width: max-content;
   box-shadow: 0 2px 6px rgba(0,0,0,0.35);
 }
 
@@ -64,7 +62,6 @@ select {
   border-radius: 14px;
   font-size: 13px;
   font-weight: bold;
-  white-space: nowrap;
 }
 
 .address-bar {
@@ -90,8 +87,8 @@ select {
 
 <div id="map"></div>
 
-<div class="address-bar">
-  📍 ข้อมูลจาก Google Sheet : DeviceLog_Lastest
+<div class="address-bar" id="addressBar">
+  📍 ที่อยู่ปลายทาง : <span id="addressText">-</span>
 </div>
 
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
@@ -112,6 +109,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 let activeLayers = [];
 let carData = {};
+let nearestCar = null;
 
 /* ================= FETCH SHEET ================= */
 fetch(SHEET_URL)
@@ -126,6 +124,7 @@ fetch(SHEET_URL)
       const plate   = r.c[1]?.v;   // B
       const carLat  = r.c[4]?.v;   // E
       const carLng  = r.c[5]?.v;   // F
+      const destAddress = r.c[29]?.v; // AD ที่อยู่ปลายทาง
       const distKm  = r.c[43]?.v;  // AR
       const timeMin = r.c[44]?.v;  // AS
       const destLat = r.c[45]?.v;  // AT
@@ -133,17 +132,25 @@ fetch(SHEET_URL)
 
       if (!plate) return;
 
-      carData[plate] = {
-        plate,
-        carPos: (carLat != null && carLng != null)
-          ? [carLat, carLng]
-          : null,
-        destPos: (destLat != null && destLng != null)
-          ? [destLat, destLng]
-          : null,
-        distKm,
-        timeMin
-      };
+        const obj = {
+          plate,
+          carPos: (carLat != null && carLng != null) ? [carLat, carLng] : null,
+          destPos: (destLat != null && destLng != null) ? [destLat, destLng] : null,
+          distKm,
+          timeMin,
+          destAddress   // ✅ เพิ่มที่อยู่
+        };
+
+      carData[plate] = obj;
+
+      if (
+        distKm != null &&
+        obj.carPos &&
+        obj.destPos &&
+        (!nearestCar || distKm < nearestCar.distKm)
+      ) {
+        nearestCar = obj;
+      }
     });
 
     initDropdown();
@@ -153,6 +160,11 @@ fetch(SHEET_URL)
 function initDropdown() {
   const select = document.getElementById("carSelect");
 
+  const optNearest = document.createElement("option");
+  optNearest.value = "__NEAREST__";
+  optNearest.textContent = "⭐ รถที่ใกล้ที่สุด";
+  select.appendChild(optNearest);
+
   Object.keys(carData).forEach(plate => {
     const opt = document.createElement("option");
     opt.value = plate;
@@ -161,36 +173,38 @@ function initDropdown() {
   });
 
   select.addEventListener("change", e => {
-    renderCar(e.target.value);
+    if (e.target.value === "__NEAREST__") {
+      renderNearestCar();
+    } else {
+      renderCar(e.target.value);
+    }
   });
 }
 
-/* ================= MAP RENDER ================= */
+/* ================= MAP UTIL ================= */
 function clearMap() {
   activeLayers.forEach(l => map.removeLayer(l));
   activeLayers = [];
 }
 
+/* ================= RENDER BY PLATE (เดิม) ================= */
 function renderCar(plate) {
   clearMap();
   if (!plate) return;
 
   const d = carData[plate];
+  
   if (!d || !d.carPos) return;
+  updateAddress(d.destAddress);
 
-  /* ===== zoom ===== */
   if (d.destPos) {
     map.fitBounds([d.carPos, d.destPos], { padding: [40, 40] });
   } else {
     map.setView(d.carPos, 15);
   }
 
-  /* ===== รถ ===== */
-  activeLayers.push(
-    L.marker(d.carPos).addTo(map)
-  );
+  activeLayers.push(L.marker(d.carPos).addTo(map));
 
-  /* ===== ป้ายทะเบียน ===== */
   activeLayers.push(
     L.marker(d.carPos, {
       icon: L.divIcon({
@@ -201,7 +215,6 @@ function renderCar(plate) {
     }).addTo(map)
   );
 
-  /* ===== ไม่มีปลายทาง ===== */
   if (!d.destPos) {
     activeLayers.push(
       L.marker(d.carPos, {
@@ -215,33 +228,49 @@ function renderCar(plate) {
     return;
   }
 
-  /* ===== ปลายทาง ===== */
+  activeLayers.push(L.marker(d.destPos).addTo(map));
+
   activeLayers.push(
-    L.marker(d.destPos).addTo(map)
+    L.circle(d.destPos, {
+      radius: 5000,
+      color: '#1e90ff',
+      weight: 2,
+      fillColor: '#1e90ff',
+      fillOpacity: 0.15
+    }).addTo(map)
   );
 
-  /* ===== เส้นทาง ===== */
   const line = L.polyline([d.carPos, d.destPos], {
     color: '#1e90ff',
     weight: 4
   }).addTo(map);
   activeLayers.push(line);
 
-  /* ===== tag ระยะ / เวลา (มีค่าเท่านั้น) ===== */
   if (d.distKm != null && d.timeMin != null) {
     activeLayers.push(
       L.marker(line.getCenter(), {
         icon: L.divIcon({
           className: '',
-          html:
-            `<div class="route-tag">
-              ⏱ ${d.timeMin} นาที • 📏 ${d.distKm} กม.
-            </div>`
+          html: `<div class="route-tag">
+            ⏱ ${d.timeMin} นาที • 📏 ${d.distKm} กม.
+          </div>`
         })
       }).addTo(map)
     );
   }
 }
+
+/* ================= RENDER NEAREST ================= */
+function renderNearestCar() {
+  if (!nearestCar) return;
+  renderCar(nearestCar.plate);
+}
+
+function updateAddress(text) {
+  const el = document.getElementById("addressText");
+  el.textContent = text || "ไม่พบข้อมูลที่อยู่";
+}
+
 </script>
 
 </body>
